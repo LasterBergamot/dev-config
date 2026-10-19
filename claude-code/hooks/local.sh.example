@@ -1,0 +1,15 @@
+# Machine-specific rules for the Claude Code hooks. Copy this file to ~/.claude/hooks/local.sh and
+# edit the copy. Every hook sources local.sh when it exists. Never commit a filled-in copy: it
+# names this machine's drives, services and folders.
+
+# Locations whose writes ask (Write, Edit, and shell redirects or moves into them). Matched as
+# substrings of lowercase, forward-slash paths, so use the form a path takes after normalisation.
+# HOOK_PROTECTED=(d:/photos e:/backups /d/photos)
+
+# Extra checks on Bash and PowerShell commands, run by guard-protect.sh after the built-in rules.
+# $LC holds the normalised command text (lowercase, forward slashes). Call hook_ask to prompt.
+# hook_local_protect() {
+#   if [[ $LC == *some-tool* && $LC == *--apply* ]]; then
+#     hook_ask "runs some-tool with --apply"
+#   fi
+# }

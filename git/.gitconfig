@@ -1,0 +1,15 @@
+[alias]
+  prettyPrint = log --graph --oneline --decorate -n 10
+
+  baseline = !git checkout main && git fetch --prune && git pull
+
+  baselineRebase = !git checkout main && git fetch --prune && git pull --rebase
+
+  baselineRebaseRemoveBranch = !git checkout main && git fetch --prune && git pull --rebase && git branch -d @{-1} || echo 'Not deleting: previous branch not fully merged (use -D to force)'
+
+  rwHis = !git add . && git commit --amend
+
+  rwHisPush = !git add . && git commit --amend && git push --force-with-lease
+
+[status]
+  showStash = true

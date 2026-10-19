@@ -1,0 +1,8 @@
+# Machine-specific hook rules and settings never belong in the repo
+/claude-code/hooks/local.sh
+*.local.*
+
+# Written by the status line next to its script
+last_payload.json
+
+__pycache__/
