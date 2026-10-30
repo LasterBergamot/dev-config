@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "deny": [
+      "PowerShell(Format-Volume *)",
+      "PowerShell(Clear-Disk *)",
+      "PowerShell(Initialize-Disk *)",
+      "PowerShell(Remove-Partition *)",
+      "PowerShell(diskpart)",
+      "PowerShell(diskpart *)",
+      "Bash(diskpart)",
+      "Bash(diskpart *)",
+      "Bash(format *)"
+    ]
+  }
+}

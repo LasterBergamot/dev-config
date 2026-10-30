@@ -12,21 +12,7 @@
 
 ## Install
 
-1. Copy the script to your Claude config directory:
-
-   ```powershell
-   Copy-Item claude-code\statusline.sh $HOME\.claude\statusline.sh
-   ```
-
-2. Add this to `~/.claude/settings.json`:
-
-   ```json
-   "statusLine": {
-     "type": "command",
-     "command": "bash ~/.claude/statusline.sh",
-     "refreshInterval": 30
-   }
-   ```
+Run the `claude-statusline` and `claude-settings-statusline` items of the installer in the repo root (see the main README). By hand: copy `statusline.sh` to `~/.claude/statusline.sh`, and merge [settings/statusline.json](settings/statusline.json) into `~/.claude/settings.json`.
 
 Claude Code picks up the change on the next session or after the settings reload.
 
@@ -49,49 +35,9 @@ Claude Code picks up the change on the next session or after the settings reload
 
 Requirements: Git for Windows (provides `bash`) and `jq`. If Chocolatey's `jq` shim is installed, the hooks call the real `jq.exe` underneath it, which is about 25 ms faster per call.
 
-Install:
+Install: run the `claude-hooks`, `claude-settings-hooks` and `claude-settings-deny` items of the installer in the repo root (see the main README). By hand: copy `hooks/*.sh` except `test-hooks.sh` to `~/.claude/hooks/`, and merge [settings/hooks.json](settings/hooks.json) and [settings/deny.json](settings/deny.json) into `~/.claude/settings.json`.
 
-```powershell
-New-Item -ItemType Directory -Force $HOME\.claude\hooks | Out-Null
-Copy-Item claude-code\hooks\*.sh $HOME\.claude\hooks\ -Exclude test-hooks.sh
-```
-
-Add this to `~/.claude/settings.json`. Merge it with the existing keys:
-
-`onFailure: "block"` (Claude Code v2.1.295 or later) makes a guard that crashes or times out block the call. Without it, a failed PreToolUse hook lets the call through. The `permissions.deny` rules hold even when the hooks are not running.
-
-```json
-"permissions": {
-  "deny": [
-    "PowerShell(Format-Volume *)", "PowerShell(Clear-Disk *)", "PowerShell(Initialize-Disk *)",
-    "PowerShell(Remove-Partition *)", "PowerShell(diskpart)", "PowerShell(diskpart *)",
-    "Bash(diskpart)", "Bash(diskpart *)", "Bash(format *)"
-  ]
-},
-"hooks": {
-  "PreToolUse": [
-    {
-      "matcher": "Bash|PowerShell|Write|Edit|NotebookEdit|Read|Artifact|ArtifactData|CronDelete|TaskStop|mcp__.*",
-      "hooks": [ { "type": "command", "command": "bash ~/.claude/hooks/pretool.sh", "timeout": 10, "onFailure": "block" } ]
-    }
-  ],
-  "PostToolUse": [
-    { "matcher": "Write|Edit|NotebookEdit", "hooks": [ { "type": "command", "command": "bash ~/.claude/hooks/posttool-check.sh", "timeout": 15 } ] }
-  ],
-  "UserPromptSubmit": [
-    { "hooks": [ { "type": "command", "command": "bash ~/.claude/hooks/prompt-check.sh", "timeout": 5 } ] }
-  ],
-  "SessionStart": [
-    { "hooks": [ { "type": "command", "command": "bash ~/.claude/hooks/session-start.sh", "timeout": 10 } ] }
-  ],
-  "Notification": [
-    { "hooks": [ { "type": "command", "command": "bash ~/.claude/hooks/notify.sh", "timeout": 5 } ] }
-  ],
-  "Stop": [
-    { "hooks": [ { "type": "command", "command": "bash ~/.claude/hooks/notify.sh", "timeout": 5 } ] }
-  ]
-}
-```
+`onFailure: "block"` (Claude Code v2.1.295 or later) in `settings/hooks.json` makes a guard that crashes or times out block the call. Without it, a failed PreToolUse hook lets the call through. The `permissions.deny` rules hold even when the hooks are not running.
 
 Run `/hooks` in Claude Code to confirm the hooks are loaded. Run the tests with `bash claude-code/hooks/test-hooks.sh`. They use only sample payloads and never write to the repo or the media libraries.
 
