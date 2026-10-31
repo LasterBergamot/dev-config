@@ -54,7 +54,7 @@ How it treats your files:
 
 Fill in `~/.claude/hooks/local.sh` with this machine's drives and services after installing; see below.
 
-Linux notes: `notify.sh` shows a Windows notification, so it does nothing on Linux, and `test-hooks.sh` needs Git Bash. The Linux path of the installer has not been run on a Linux machine.
+Linux notes: `notify.sh` shows a Windows notification, so it does nothing on Linux, and `test-hooks.sh` needs Git Bash, so the installer runs the hook tests only on Windows. On Linux the Antigravity status line is set to run `statusline.sh` with `bash`; the `.bat` file is only copied on Windows. The installer has been run successfully on Linux.
 
 ## Tests
 
