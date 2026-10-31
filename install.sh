@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Interactive, selective installer for dev-config. Copies the Claude Code hooks and status line, the
-# Antigravity CLI status line and the git aliases to where each tool reads them, and wires them into
-# the tools' settings. Safe to re-run: unchanged files are skipped, replaced files are backed up first.
+# Interactive, selective installer for dev-config. Copies the Claude Code status line, the Antigravity
+# CLI status line and the git aliases to where each tool reads them, and wires them into the tools'
+# settings. Safe to re-run: unchanged files are skipped, replaced files are backed up first.
+# The Claude Code guard hooks are installed from ai-common, not from here; claude-old-hooks removes
+# the copy this repo used to install.
 #
 # Usage: bash install.sh [options]
 #   (no options)      menu: pick what to install
@@ -10,7 +12,7 @@
 #   --only a,b        install only the named items, no menu
 #   --skip a,b        leave the named items out (with --all)
 #   --dry-run         show what would change and write nothing
-#   -y, --yes         answer yes to questions (replacing a different statusLine, running the tests)
+#   -y, --yes         answer yes to questions (replacing a different statusLine)
 #
 # Folders can be redirected with CLAUDE_DIR (default ~/.claude) and GEMINI_DIR
 # (default ~/.gemini/antigravity-cli).
@@ -29,16 +31,16 @@ case $(uname -s) in
   *)                    WINDOWS=0; PLATFORM='Linux' ;;
 esac
 
-ITEMS=(claude-hooks claude-local claude-statusline claude-settings-hooks claude-settings-statusline
-       claude-settings-deny antigravity-statusline git-aliases)
+ITEMS=(claude-old-hooks claude-statusline claude-settings-statusline claude-settings-deny
+       antigravity-statusline git-aliases)
 
 DRY=0; YES=0; MODE=menu; ONLY=''; SKIP=''; SELECTED=' '; CHANGES=0; SKIPPED=0
 HAVE_JQ=0; command -v jq >/dev/null 2>&1 && HAVE_JQ=1
 
-HOOK_SRC=()
-for f in "$REPO"/claude-code/hooks/*.sh; do
-  [[ ${f##*/} == test-hooks.sh ]] || HOOK_SRC+=("$f")
-done
+# The hook scripts this repo used to copy to ~/.claude/hooks. They now come from ai-common, which
+# installs them to ~/.claude/hooks/guards/scripts/. local.sh is not listed: ai-common reads it too.
+OLD_HOOKS=(audit backup guard-delete guard-git guard-network guard-protect guard-secrets
+           guard-workspace lib notify posttool-check pretool prompt-check session-start)
 
 # --- output helpers ---------------------------------------------------------------------------
 
@@ -98,12 +100,14 @@ copy_files() {  # $1 destination dir, rest = sources
 # Every filter sees the current file as $cur and the fragment to merge in as $frag.
 PRE='input as $cur | input as $frag | '
 
-# Replaces the entries that run one of our scripts, keeps every other hook the user has.
-F_HOOKS='($frag.hooks | [.[][] | .hooks[]? | .command]) as $ours
-  | $cur
-  | .hooks = (reduce ($frag.hooks | keys[]) as $ev ((.hooks // {});
-      .[$ev] = (((.[$ev] // []) | map(select((([.hooks[]? | .command] - $ours) | length) == ([.hooks[]? | .command] | length))))
-                + $frag.hooks[$ev])))'
+# Drops the hook entries that run one of the old scripts (bash ~/.claude/hooks/<name>.sh) and keeps
+# every other hook, including ai-common's, whose paths end in /hooks/guards/scripts/<name>.sh.
+F_OLD_HOOKS='$cur | if .hooks then
+    .hooks |= (map_values(map(.hooks = ((.hooks // []) | map(select((.command // "") | test("^bash ~/\\.claude/hooks/[a-z-]+\\.sh$") | not))))
+               | map(select(.hooks | length > 0)))
+               | with_entries(select(.value | length > 0)))
+    | if .hooks == {} then del(.hooks) else . end
+  else . end'
 F_STATUS='$cur | .statusLine = $frag.statusLine'
 F_DENY='($cur.permissions.deny // []) as $d | $cur | .permissions.deny = ($d + ($frag.permissions.deny - $d))'
 
@@ -147,7 +151,6 @@ confirm_statusline() {  # $1 settings file, $2 desired statusLine (compact JSON)
 
 # --- items ------------------------------------------------------------------------------------
 
-FRAG_HOOKS=$(cat "$REPO/claude-code/settings/hooks.json")
 FRAG_STATUS=$(cat "$REPO/claude-code/settings/statusline.json")
 FRAG_DENY=$(cat "$REPO/claude-code/settings/deny.json")
 
@@ -156,10 +159,8 @@ GEMINI_SETTINGS=$GEMINI_DIR/settings.json
 
 item_desc() {
   case $1 in
-    claude-hooks)               echo "Guard and feedback hooks -> $(tilde "$CLAUDE_DIR/hooks")" ;;
-    claude-local)               echo "Machine rules template -> hooks/local.sh (never overwritten)" ;;
+    claude-old-hooks)           echo "Remove the old guard hooks (now installed from ai-common); keeps local.sh" ;;
     claude-statusline)          echo "Status line script -> $(tilde "$CLAUDE_DIR/statusline.sh")" ;;
-    claude-settings-hooks)      echo "Register the hooks in settings.json" ;;
     claude-settings-statusline) echo "Set statusLine in settings.json" ;;
     claude-settings-deny)       echo "Add deny rules for disk-wiping commands to settings.json" ;;
     antigravity-statusline)     echo "Antigravity CLI status line -> $(tilde "$GEMINI_DIR") + its settings.json" ;;
@@ -189,14 +190,40 @@ git_include_path() { if (( WINDOWS )); then cygpath -m "$REPO/git/.gitconfig"; e
 
 git_included() { git config --global --get-all include.path 2>/dev/null | tr -d '\r' | grep -Fxq -- "$(git_include_path)"; }
 
+old_hook_files() {  # prints the old hook scripts still in ~/.claude/hooks; fails when there are none
+  local n found=1
+  for n in "${OLD_HOOKS[@]}"; do
+    [[ -f $CLAUDE_DIR/hooks/$n.sh ]] && { printf '%s\n' "$CLAUDE_DIR/hooks/$n.sh"; found=0; }
+  done
+  return $found
+}
+
+# Unregisters the old hooks, then moves their scripts into the backup folder. In that order:
+# pretool.sh is registered with onFailure "block", so removing it first would block every tool call.
+remove_old_hooks() {
+  local f moved=0
+  local -a files
+  if [[ $(json_state "$CLAUDE_SETTINGS" "$F_OLD_HOOKS" '{}') == invalid ]]; then
+    warn "$(tilde "$CLAUDE_SETTINGS") is not valid JSON; old hooks left alone"; skip; return 0
+  fi
+  json_apply "$CLAUDE_SETTINGS" "$F_OLD_HOOKS" '{}' "old hook entries removed"
+  mapfile -t files < <(old_hook_files)
+  for f in "${files[@]}"; do
+    if (( DRY )); then say "  would move ${f##*/} to the backup folder"; continue; fi
+    mkdir -p "$BACKUP_DIR/old-hooks" && mv "$f" "$BACKUP_DIR/old-hooks/" && moved=$((moved + 1))
+  done
+  if (( moved )); then say "  moved $moved old hook script(s) to $(tilde "$BACKUP_DIR/old-hooks")"; CHANGES=$((CHANGES + 1)); fi
+  say "  Install the guards from ai-common: apm install -g LasterBergamot/ai-common/packages/guards#<tag> --target claude"
+}
+
 state_of() {  # -> up to date | new | changed | pending | needs jq | invalid json
   local s
-  if (( ! HAVE_JQ )) && [[ $1 == claude-settings-* || $1 == antigravity-statusline ]]; then echo 'needs jq'; return; fi
+  if (( ! HAVE_JQ )) && [[ $1 == claude-settings-* || $1 == claude-old-hooks || $1 == antigravity-statusline ]]; then echo 'needs jq'; return; fi
   case $1 in
-    claude-hooks)      s=$(files_state "$CLAUDE_DIR/hooks" "${HOOK_SRC[@]}") ;;
-    claude-local)      [[ -f $CLAUDE_DIR/hooks/local.sh ]] && s=same || s=new ;;
+    claude-old-hooks)
+      s=$(json_state "$CLAUDE_SETTINGS" "$F_OLD_HOOKS" '{}')
+      if [[ $s == same ]] && old_hook_files >/dev/null; then s=pending; fi ;;
     claude-statusline) s=$(files_state "$CLAUDE_DIR" "$REPO/claude-code/statusline.sh") ;;
-    claude-settings-hooks)      s=$(json_state "$CLAUDE_SETTINGS" "$F_HOOKS" "$FRAG_HOOKS") ;;
     claude-settings-statusline) s=$(json_state "$CLAUDE_SETTINGS" "$F_STATUS" "$FRAG_STATUS") ;;
     claude-settings-deny)       s=$(json_state "$CLAUDE_SETTINGS" "$F_DENY" "$FRAG_DENY") ;;
     antigravity-statusline)
@@ -210,24 +237,10 @@ state_of() {  # -> up to date | new | changed | pending | needs jq | invalid jso
 
 apply_item() {
   case $1 in
-    claude-hooks)
-      copy_files "$CLAUDE_DIR/hooks" "${HOOK_SRC[@]}"
-      (( HAVE_JQ )) || warn "jq is not on PATH; the hooks need it at run time" ;;
-    claude-local)
-      if [[ -f $CLAUDE_DIR/hooks/local.sh ]]; then say "  local.sh already exists; left alone"
-      elif (( DRY )); then say "  would create hooks/local.sh from local.sh.example"
-      else
-        mkdir -p "$CLAUDE_DIR/hooks" && cp "$REPO/claude-code/hooks/local.sh.example" "$CLAUDE_DIR/hooks/local.sh" \
-          && say "  created hooks/local.sh; fill in this machine's drives and services" && CHANGES=$((CHANGES + 1))
-      fi ;;
+    claude-old-hooks)
+      remove_old_hooks ;;
     claude-statusline)
       copy_files "$CLAUDE_DIR" "$REPO/claude-code/statusline.sh" ;;
-    claude-settings-hooks)
-      # onFailure "block" stops every tool call when pretool.sh is missing, so never register it alone.
-      if [[ ! -f $CLAUDE_DIR/hooks/pretool.sh ]] && ! { (( DRY )) && is_sel claude-hooks; }; then
-        warn "hooks are not installed in $(tilde "$CLAUDE_DIR/hooks"); not registering them. Install claude-hooks too."; skip; return 0
-      fi
-      json_apply "$CLAUDE_SETTINGS" "$F_HOOKS" "$FRAG_HOOKS" "hooks" ;;
     claude-settings-statusline)
       if [[ ! -f $CLAUDE_DIR/statusline.sh ]] && ! { (( DRY )) && is_sel claude-statusline; }; then
         warn "statusline.sh is not installed; not setting statusLine. Install claude-statusline too."; skip; return 0
@@ -356,11 +369,5 @@ elif (( CHANGES )); then
   [[ -d $BACKUP_DIR ]] && say "Replaced files were saved to $(tilde "$BACKUP_DIR")."
   say "Restart Claude Code, or run /hooks, to pick up hook and settings changes."
 elif (( ! SKIPPED )); then say "Everything selected was already up to date."; fi
-(( SKIPPED )) && say "$SKIPPED item(s) skipped; see the messages above."
+if (( SKIPPED )); then say "$SKIPPED item(s) skipped; see the messages above."; fi
 
-# The hook tests need Git Bash's `pwd -W`, so they only run on Windows.
-if (( ! DRY && WINDOWS )) && is_sel claude-hooks && [[ -f $CLAUDE_DIR/hooks/pretool.sh ]]; then
-  if ask_yn "Run the hook tests against the installed hooks?"; then
-    bash "$REPO/claude-code/hooks/test-hooks.sh" "$CLAUDE_DIR/hooks" | tail -n 3
-  fi
-fi

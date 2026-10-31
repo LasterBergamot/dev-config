@@ -1,5 +1,4 @@
-# Machine-specific hook rules and settings never belong in the repo
-/claude-code/hooks/local.sh
+# Machine-specific settings never belong in the repo
 *.local.*
 
 # Written by the status line next to its script
