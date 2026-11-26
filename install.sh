@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Interactive, selective installer for dev-config. Copies the Claude Code status line, the Antigravity
-# CLI status line and the git aliases to where each tool reads them, and wires them into the tools'
-# settings. Safe to re-run: unchanged files are skipped, replaced files are backed up first.
+# CLI status line, the git aliases and (Linux only) the disk-cleanup command to where each tool reads
+# them, and wires them into the tools' settings. Safe to re-run: unchanged files are skipped, replaced
+# files are backed up first.
 # The Claude Code guard hooks are installed from ai-common, not from here; claude-old-hooks removes
 # the copy this repo used to install.
 #
@@ -14,8 +15,8 @@
 #   --dry-run         show what would change and write nothing
 #   -y, --yes         answer yes to questions (replacing a different statusLine)
 #
-# Folders can be redirected with CLAUDE_DIR (default ~/.claude) and GEMINI_DIR
-# (default ~/.gemini/antigravity-cli).
+# Folders can be redirected with CLAUDE_DIR (default ~/.claude), GEMINI_DIR
+# (default ~/.gemini/antigravity-cli) and BIN_DIR (default ~/.local/bin, for disk-cleanup).
 set -u
 
 # Native tools (jq, git) must receive arguments untouched under Git Bash.
@@ -24,6 +25,7 @@ export MSYS2_ARG_CONV_EXCL='*'
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CLAUDE_DIR=${CLAUDE_DIR:-$HOME/.claude}
 GEMINI_DIR=${GEMINI_DIR:-$HOME/.gemini/antigravity-cli}
+BIN_DIR=${BIN_DIR:-$HOME/.local/bin}
 BACKUP_DIR=$CLAUDE_DIR/dev-config-backups/$(date +%Y%m%d-%H%M%S)
 
 case $(uname -s) in
@@ -32,7 +34,7 @@ case $(uname -s) in
 esac
 
 ITEMS=(claude-old-hooks claude-statusline claude-settings-statusline claude-settings-deny
-       antigravity-statusline git-aliases)
+       antigravity-statusline git-aliases disk-cleanup)
 
 DRY=0; YES=0; MODE=menu; ONLY=''; SKIP=''; SELECTED=' '; CHANGES=0; SKIPPED=0
 HAVE_JQ=0; command -v jq >/dev/null 2>&1 && HAVE_JQ=1
@@ -83,16 +85,18 @@ backup_file() {  # keeps the file that is about to be replaced
   mkdir -p "$BACKUP_DIR" && cp "$1" "$BACKUP_DIR/$(printf '%s' "$1" | tr '/\\:' '___')"
 }
 
+copy_as() {  # $1 source, $2 destination file
+  local name=${2##*/} s; s=$(file_state "$1" "$2")
+  [[ $s == same ]] && return 0
+  if (( DRY )); then say "  would copy $name ($s)"; return 0; fi
+  mkdir -p "$(dirname "$2")"
+  [[ $s == changed ]] && backup_file "$2"
+  if cp "$1" "$2"; then say "  copied $name ($s)"; CHANGES=$((CHANGES + 1)); else warn "could not copy $name"; return 1; fi
+}
+
 copy_files() {  # $1 destination dir, rest = sources
-  local dest=$1 f name s; shift
-  for f in "$@"; do
-    name=${f##*/}; s=$(file_state "$f" "$dest/$name")
-    [[ $s == same ]] && continue
-    if (( DRY )); then say "  would copy $name ($s)"; continue; fi
-    mkdir -p "$dest"
-    [[ $s == changed ]] && backup_file "$dest/$name"
-    if cp "$f" "$dest/$name"; then say "  copied $name ($s)"; CHANGES=$((CHANGES + 1)); else warn "could not copy $name"; fi
-  done
+  local dest=$1 f; shift
+  for f in "$@"; do copy_as "$f" "$dest/${f##*/}"; done
 }
 
 # --- JSON settings helpers (jq) ---------------------------------------------------------------
@@ -165,8 +169,12 @@ item_desc() {
     claude-settings-deny)       echo "Add deny rules for disk-wiping commands to settings.json" ;;
     antigravity-statusline)     echo "Antigravity CLI status line -> $(tilde "$GEMINI_DIR") + its settings.json" ;;
     git-aliases)                echo "Include git/.gitconfig from your global git config" ;;
+    disk-cleanup)               echo "disk-cleanup command -> $(tilde "$BIN_DIR/disk-cleanup") (Linux)" ;;
   esac
 }
+
+DC_SRC=$REPO/disk-cleanup/disk-cleanup.sh
+on_path() { [[ ":$PATH:" == *":$1:"* ]]; }
 
 antigravity_files() {
   AG_SRC=("$REPO/antigravity-cli/statusline.sh")
@@ -216,7 +224,7 @@ remove_old_hooks() {
   say "  Install the guards from ai-common: apm install -g LasterBergamot/ai-common/packages/guards#<tag> --target claude"
 }
 
-state_of() {  # -> up to date | new | changed | pending | needs jq | invalid json
+state_of() {  # -> up to date | new | changed | pending | needs jq | invalid json | linux only
   local s
   if (( ! HAVE_JQ )) && [[ $1 == claude-settings-* || $1 == claude-old-hooks || $1 == antigravity-statusline ]]; then echo 'needs jq'; return; fi
   case $1 in
@@ -231,6 +239,7 @@ state_of() {  # -> up to date | new | changed | pending | needs jq | invalid jso
       s=$(files_state "$GEMINI_DIR" "${AG_SRC[@]}")
       if [[ $s == same ]]; then s=$(json_state "$GEMINI_SETTINGS" "$F_STATUS" "$(antigravity_fragment)"); fi ;;
     git-aliases) git_included && s=same || s=pending ;;
+    disk-cleanup) if (( WINDOWS )); then s='linux only'; else s=$(file_state "$DC_SRC" "$BIN_DIR/disk-cleanup"); fi ;;
   esac
   case $s in same) echo 'up to date' ;; invalid) echo 'invalid json' ;; *) echo "$s" ;; esac
 }
@@ -263,6 +272,9 @@ apply_item() {
       elif git config --global --add include.path "$(git_include_path)"; then
         say "  added include.path $(git_include_path)"; CHANGES=$((CHANGES + 1))
       else warn "git config failed"; fi ;;
+    disk-cleanup)
+      copy_as "$DC_SRC" "$BIN_DIR/disk-cleanup" && { (( DRY )) || chmod +x "$BIN_DIR/disk-cleanup"; }
+      on_path "$BIN_DIR" || warn "$(tilde "$BIN_DIR") is not on PATH; add it to run disk-cleanup by name" ;;
   esac
 }
 
@@ -271,7 +283,7 @@ apply_item() {
 STATE=()
 load_states() { local id; STATE=(); for id in "${ITEMS[@]}"; do STATE+=("$(state_of "$id")"); done; }
 
-selectable() { [[ ${STATE[$1]} != 'needs jq' && ${STATE[$1]} != 'invalid json' ]]; }
+selectable() { [[ ${STATE[$1]} != 'needs jq' && ${STATE[$1]} != 'invalid json' && ${STATE[$1]} != 'linux only' ]]; }
 
 preselect_pending() {
   local i; SELECTED=' '
